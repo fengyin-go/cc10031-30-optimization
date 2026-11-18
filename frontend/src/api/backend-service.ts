@@ -1,6 +1,15 @@
 import { request } from './client'
 import { moduleMeta } from '@/data/modules'
-import type { ActionResult, EntryRow, OverviewResult, PageResult } from '@/data/types'
+import type {
+  ActionResult,
+  EntryRow,
+  GuardPlanItem,
+  GuardProcessResult,
+  GuardReceipt,
+  GuardSnapshot,
+  OverviewResult,
+  PageResult,
+} from '@/data/types'
 
 export { moduleMeta }
 
@@ -105,4 +114,60 @@ export async function loadRecoveryStats(): Promise<Record<string, unknown>> {
   const response = await request('/api/recovery')
   if (!response.ok) throw new Error('恢复状态查询失败')
   return await response.json()
+}
+
+/* ---------- 代理防护联动：切换计划、限流回执 ---------- */
+
+/** 处理清单：全部切换计划处理项 */
+export async function listGuardPlans(): Promise<{ items: GuardPlanItem[]; total: number }> {
+  const response = await request('/api/guard/plans')
+  if (!response.ok) throw new Error('处理清单读取失败')
+  return await response.json()
+}
+
+/** 提交示例切换计划（处理项承载，等待反封锁模块接收展开） */
+export async function submitGuardDemoPlan(): Promise<GuardProcessResult> {
+  const response = await request('/api/guard/plans/demo', { method: 'POST' })
+  return await response.json()
+}
+
+/** 执行联动处理：并发执行只接受首个成功结果 */
+export async function processGuardPlans(strategy: string): Promise<GuardProcessResult> {
+  const response = await request(`/api/guard/process?strategy=${encodeURIComponent(strategy)}`, {
+    method: 'POST',
+  })
+  return await response.json()
+}
+
+/** 结果列表：按站点和节点查看最终上限、规则来源与切换时间 */
+export async function listGuardReceipts(
+  filters: { 站点?: string; 节点?: string } = {},
+): Promise<{ items: GuardReceipt[]; total: number }> {
+  const query = new URLSearchParams()
+  if (filters.站点) query.set('站点', filters.站点)
+  if (filters.节点) query.set('节点', filters.节点)
+  const response = await request(`/api/guard/receipts?${query.toString()}`)
+  if (!response.ok) throw new Error('限流回执读取失败')
+  return await response.json()
+}
+
+/** 联动快照：处理终态与统计 */
+export async function loadGuardSnapshot(): Promise<GuardSnapshot> {
+  const response = await request('/api/guard/snapshot')
+  if (!response.ok) throw new Error('联动快照读取失败')
+  return await response.json()
+}
+
+/** 下载防护限流回执数据文件（CSV，本地交付，只含当前绑定节点的唯一上限） */
+export async function downloadGuardReceipts(): Promise<void> {
+  const response = await request('/api/guard/receipts/export')
+  if (!response.ok) throw new Error('防护限流回执导出失败')
+  const url = URL.createObjectURL(await response.blob())
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = 'guard_receipts.csv'
+  document.body.appendChild(anchor)
+  anchor.click()
+  document.body.removeChild(anchor)
+  URL.revokeObjectURL(url)
 }

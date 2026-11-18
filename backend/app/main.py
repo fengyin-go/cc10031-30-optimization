@@ -9,7 +9,7 @@ from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routers import ROUTERS
+from app.routers import ROUTERS, guard
 from app.store import store
 from app.services import runtime_session, callback_hook
 
@@ -227,6 +227,23 @@ def pipeline_element_execution() -> dict[str, object]:
     result = runtime_session.consume_strategies_and_execute()
     return {"ok": True, "result": result}
 
+
+@app.post("/api/pipeline/proxy-guard")
+def pipeline_proxy_guard(strategy: str = Query(default="strict")) -> dict[str, object]:
+    """触发代理防护联动：展开切换计划，产出防护限流回执。"""
+    from app.services.pipeline import pipeline_proxy_guard_linkage
+
+    result = pipeline_proxy_guard_linkage(strategy=strategy)
+    return {
+        "ok": result.ok,
+        "summary": result.summary,
+        "data": result.data,
+        "errors": result.errors or None,
+    }
+
+
+# 代理防护联动路由含 /api/guard/*，必须在资源路由 /api/{module} 之前注册。
+app.include_router(guard.router)
 
 # 资源路由含 /api/{module}，必须放在 health / overview 之后注册，
 # 否则固定路径会被动态路径抢先匹配。

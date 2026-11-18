@@ -374,7 +374,69 @@ def pipeline_proxy_anti_block(proxy_id: int | None = None) -> PipelineResult:
 
 
 # ---------------------------------------------------------------------------
-# 链路 5: data_enrich → result_verify 二次验证
+# 链路 5: proxy_router → rate_limiter → anti_block → proxy_guard 限流回执
+# ---------------------------------------------------------------------------
+
+def pipeline_proxy_guard_linkage(strategy: str = "strict") -> PipelineResult:
+    """代理路由 → 频控策略 → 反封锁 → 防护限流回执 联动链路。
+
+    反封锁模块接收并展开处理项承载的代理切换计划，重算窗口内防护
+    策略数据，节点切换与有效频控共同发布；冲突会把联动处理终态
+    推进到 30 号（冲突已裁决）。
+    """
+    result = PipelineResult(
+        pipeline="proxy_router→rate_limiter→anti_block→proxy_guard", ok=True)
+
+    # 1) 代理节点数据
+    proxies = store.rows("proxy_router")
+    if not proxies:
+        result.add_error("无代理节点")
+        result.ok = False
+        return result
+    result.add_step("proxy_router", proxies[0])
+    result.data["proxy_online"] = sum(1 for p in proxies if p.get("status") == "在线")
+
+    # 2) 频控规则数据
+    raters = store.rows("rate_limiter")
+    if not raters:
+        result.add_error("无频控策略")
+        result.ok = False
+        return result
+    for rl in raters:
+        result.add_step("rate_limiter", rl)
+    result.data["rater_active"] = sum(1 for r in raters if r.get("status") == "已生效")
+
+    # 3) 防护策略数据
+    blocks = store.rows("anti_block")
+    if not blocks:
+        result.add_error("无反封锁策略")
+        result.ok = False
+        return result
+    for ab in blocks:
+        result.add_step("anti_block", ab)
+    result.data["block_active"] = sum(1 for b in blocks if b.get("status") == "已启用")
+
+    # 4) 代理防护联动：展开切换计划，产出限流回执
+    from app.services.proxy_guard import proxy_guard
+
+    run = proxy_guard.process_plans(strategy=strategy)
+    if not run.get("ok"):
+        # 并发执行只接受首个成功结果：链路标记等待，不算断流。
+        result.wait_required = True
+        result.data["guard_skipped"] = run.get("message")
+    else:
+        result.data["guard_processed"] = run.get("processed", 0)
+        result.data["guard_receipts"] = run.get("receipts", 0)
+        result.data["guard_conflicts"] = run.get("conflicts", 0)
+    snapshot = proxy_guard.snapshot()
+    result.data["terminal_state"] = snapshot["terminal_state"]
+    result.data["terminal_code"] = snapshot["terminal_code"]
+    result.data["current_receipts"] = snapshot["current_receipts"]
+    return result
+
+
+# ---------------------------------------------------------------------------
+# 链路 6: data_enrich → result_verify 二次验证
 # ---------------------------------------------------------------------------
 
 def pipeline_enrich_verify(enrich_id: int | None = None) -> PipelineResult:
@@ -569,6 +631,7 @@ def run_all_pipelines() -> dict[str, Any]:
         "trigger_queue": lambda: pipeline_trigger_to_queue(),
         "element_output": lambda: pipeline_element_to_output(),
         "proxy_anti_block": lambda: pipeline_proxy_anti_block(),
+        "proxy_guard_linkage": lambda: pipeline_proxy_guard_linkage(),
         "enrich_verify": lambda: pipeline_enrich_verify(),
         "credential_env": lambda: pipeline_credential_env(),
         "anomaly_exec": lambda: pipeline_anomaly_to_exec(),

@@ -39,11 +39,27 @@ class AntiBlockService(BaseModuleService):
             "blocked": sum(1 for r in rows if r.get("status") == "触发封锁"),
         }
 
+    def consume_switch_plans(self, strategy: str = "strict") -> dict[str, Any]:
+        """接收并展开处理项承载的代理切换计划（代理防护联动入口）。
+
+        按处理项约定和可导出的防护限流回执数据文件，按最终节点绑定
+        更新请求间隔并生成导出记录；冲突裁决策略见 proxy_guard。
+        """
+        from app.services.proxy_guard import proxy_guard
+
+        return proxy_guard.process_plans(strategy=strategy)
+
     def domain_snapshot(self) -> dict[str, Any]:
         base = super().domain_snapshot()
         rows = store.rows(self.MODULE)
+        from app.services.proxy_guard import proxy_guard
+
+        guard = proxy_guard.snapshot()
         return {
             **base,
             "active_strategies": sum(1 for r in rows if r.get("status") == "已启用"),
             "blocked_count": sum(1 for r in rows if r.get("status") == "触发封锁"),
+            "guard_receipts": guard["current_receipts"],
+            "guard_terminal_state": guard["terminal_state"],
+            "guard_terminal_code": guard["terminal_code"],
         }
